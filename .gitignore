@@ -1,6 +1,5 @@
 node_modules/
 dist/
-.ghci-mcp/
 *.log
 result
 .direnv/

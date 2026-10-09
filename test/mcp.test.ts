@@ -31,6 +31,7 @@ async function call(name: string, args: Record<string, unknown> = {}) {
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "ghci-mcp-e2e-"));
+  process.env.XDG_CACHE_HOME = join(dir, "cache"); // keep sockets/logs out of the real ~/.cache
   mkdirSync(join(dir, "src"));
   writeFileSync(join(dir, "src", "Lib.hs"), "module Lib where\n\nanswer :: Int\nanswer = 42\n");
   writeFileSync(

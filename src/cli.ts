@@ -19,7 +19,7 @@ Usage:
       If no command is given, the one from ${CONFIG_FILENAME} is used.
 
   ghci-mcp start [--session NAME] [--wait] [-- <command...>]
-      Same, but detached in the background (log in .ghci-mcp/NAME.log).
+      Same, but detached in the background (log in ~/.cache/ghci-mcp/<project>-<hash>/NAME.log).
 
   ghci-mcp stop   [--session NAME]       Shut a session down.
   ghci-mcp status [--session NAME]       Show session state.

@@ -19,7 +19,7 @@ processes, so the session lives **outside** the agent. You start it in a
 terminal with whatever command your project needs (`cabal repl lib:foo`,
 `stack repl`, `nix develop -c cabal repl`, `make repl`...), and `ghci-mcp serve`
 wraps it: it installs a unique prompt sentinel, serialises commands, and
-listens on a Unix socket under `.ghci-mcp/`. The MCP server is a stateless
+listens on a Unix socket under `~/.cache/ghci-mcp/`. The MCP server is a stateless
 client of that socket. It can be restarted freely, several agents can share one
 session, and if there is no session it tells the agent exactly what to ask you
 to run. For projects where that's fine, it can also start the daemon in the
@@ -75,7 +75,7 @@ project's `nix develop` shell and it has no Node, run `serve` from outside it
 with `nix develop -c ...` as above.
 
 **3. Open Claude Code in the project directory.** The MCP server finds the
-session through the socket at `<project root>/.ghci-mcp/default.sock`. If no
+session through the socket at `~/.cache/ghci-mcp/<project>-<hash>/default.sock`. If no
 session is running, the tools tell the agent the exact `serve` command to ask
 you for.
 
@@ -84,10 +84,10 @@ you for.
 - **No config file needed.** Give the command on the `serve` line. Without a
   `ghci-mcp.json`, `ghci_start` / `ghci-mcp start` guess `stack repl` if there
   is a `stack.yaml`, else `cabal repl`.
-- **Runtime state** (socket, logs) goes in `<project root>/.ghci-mcp/`. To keep
-  it out of git without editing the project's `.gitignore`:
-  `echo .ghci-mcp/ >> .git/info/exclude` (same for `ghci-mcp.json` if you
-  create one).
+- **Runtime state** (socket, logs) goes in
+  `~/.cache/ghci-mcp/<project>-<hash>/` (`$XDG_CACHE_HOME` if set), never in
+  the project. To keep a `ghci-mcp.json` out of git without editing the
+  project's `.gitignore`: `echo ghci-mcp.json >> .git/info/exclude`.
 
 ## Configuration (optional)
 
@@ -130,8 +130,12 @@ Shorthand for a single session: `{ "command": "stack repl" }`.
 | `env`              | extra environment variables for GHCi                                       |
 
 The project root is the nearest ancestor directory with a `ghci-mcp.json`
-(falling back to `cabal.project`, `stack.yaml`, `hie.yaml` or a `.cabal` file).
-Set `GHCI_MCP_ROOT` to override.
+(falling back to `cabal.project`/`stack.yaml`, then `hie.yaml` or a `.cabal` file).
+If no ancestor matches (e.g. Claude runs at a git root with the Haskell project
+in a subdirectory), the single subdirectory within two levels that has a
+`ghci-mcp.json`, `cabal.project` or `stack.yaml` is used. The daemon and the MCP
+server must agree on the root, since the socket path is derived from it. Set
+`GHCI_MCP_ROOT` to override.
 
 ## Start a session
 
@@ -151,7 +155,7 @@ command; Ctrl-C while idle quits.
 Background alternative (what the `ghci_start` tool does):
 
 ```sh
-ghci-mcp start --wait        # log in .ghci-mcp/default.log
+ghci-mcp start --wait        # log in ~/.cache/ghci-mcp/<project>-<hash>/default.log
 ghci-mcp status
 ghci-mcp stop
 ```

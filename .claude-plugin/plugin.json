@@ -1,0 +1,7 @@
+{
+  "name": "ghci-mcp",
+  "version": "0.1.0",
+  "description": "Use a long-lived GHCi session to typecheck, evaluate and test Haskell instead of running full builds.",
+  "author": { "name": "Sean Chalmers" },
+  "keywords": ["haskell", "ghci", "mcp", "typecheck", "repl"]
+}

@@ -358,7 +358,7 @@ export function createMcpServer(cfg: ProjectConfig = loadConfig()): McpServer {
         return text(
           `${head}\n\n${r.output}`,
           { ...summary, command: cmd, durationMs: r.durationMs, interrupted: r.interrupted, diagnostics: diags, output: r.output },
-          (summary.framework !== "unknown" && !summary.passed) || diags.some((d) => d.severity === "error"),
+          !summary.passed,
         );
       }),
   );
@@ -427,6 +427,13 @@ export interface TestSummary {
 }
 
 export function parseTestOutput(output: string): TestSummary {
+  const s = parseFrameworkOutput(output);
+  // A GHC error (e.g. "Variable not in scope") means the tests didn't run cleanly, whatever the framework said.
+  if (parseDiagnostics(output).some((d) => d.severity === "error")) s.passed = false;
+  return s;
+}
+
+function parseFrameworkOutput(output: string): TestSummary {
   // hspec: "12 examples, 0 failures" / "12 examples, 2 failures, 1 pending"
   const hspec = /(\d+) examples?, (\d+) failures?(?:, (\d+) pending)?/.exec(output);
   if (hspec) {
@@ -441,5 +448,5 @@ export function parseTestOutput(output: string): TestSummary {
   if (tastyFail) {
     return { framework: "tasty", passed: false, total: Number(tastyFail[2]), failures: Number(tastyFail[1]), summaryLine: tastyFail[0] };
   }
-  return { framework: "unknown", passed: !/\*\*\* Exception|error:/.test(output), total: null, failures: null, summaryLine: "" };
+  return { framework: "unknown", passed: !/\*\*\* Exception|error:|Not in scope/.test(output), total: null, failures: null, summaryLine: "" };
 }

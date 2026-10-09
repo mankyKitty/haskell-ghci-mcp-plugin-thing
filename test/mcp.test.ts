@@ -152,5 +152,8 @@ describe("parseTestOutput", () => {
     expect(parseTestOutput("All 7 tests passed (0.01s)")).toMatchObject({ framework: "tasty", passed: true, total: 7 });
     expect(parseTestOutput("2 out of 7 tests failed (0.01s)")).toMatchObject({ framework: "tasty", passed: false, failures: 2 });
     expect(parseTestOutput("hello").framework).toBe("unknown");
+    expect(parseTestOutput("<interactive>:1:1: error: [GHC-88464]\n    Variable not in scope: spec").passed).toBe(false);
+    expect(parseTestOutput("<interactive>:1:1: Not in scope: 'main'").passed).toBe(false);
+    expect(parseTestOutput("<interactive>:1:1: error: [GHC-88464]\n    Variable not in scope: x\n\n3 examples, 0 failures").passed).toBe(false);
   });
 });

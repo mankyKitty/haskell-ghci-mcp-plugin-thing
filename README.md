@@ -197,6 +197,31 @@ the socket.
 Every tool takes an optional `session` (default `"default"`); the ones that
 run code take `timeoutMs`.
 
+Diagnostics retain the GHC message, code and raw text. Source-position fields
+(`file`, `line`, `column` and any end position) are absent when GHC reports
+`<no location info>`, such as a module-import error. Such errors still make
+evaluation, query and test replies fail; warnings alone do not.
+
+`ghci_run_tests` reports success only when it recognises an hspec or tasty
+summary with at least one test and no failures, and the command completes
+without a GHC error, exception or interruption. Missing summaries and zero-test
+runs are labelled `UNVERIFIED`; interrupted runs are labelled `INTERRUPTED`.
+These return `passed: false` and an MCP error. Use `ghci_eval` for custom commands
+that do not produce a supported test summary.
+
+This checks the reported test result, not whether every edited dependency is
+loaded as source. A test-only Cabal REPL can use compiled libraries that `:reload`
+does not refresh. Check the loaded components before relying on an edit/test loop.
+GHC 9.10 multi-component mode also refuses commands such as `:main`; such a
+refusal is not a test pass.
+
+The `args` field appends CLI arguments only to colon commands such as `:main`.
+For a Haskell expression, use a command such as
+`System.Environment.withArgs ["--match", "MyModule"] Main.main` and omit `args`
+(import `System.Environment` first if needed). Appending `--match` directly to
+`Main.main` would start a Haskell comment and run without the filter, so the
+tool refuses that combination before running it.
+
 ## How the wrapper talks to GHCi
 
 On start it sends

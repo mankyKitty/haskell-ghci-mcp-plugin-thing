@@ -69,6 +69,36 @@ describe("parseLoadOutput", () => {
     expect(parseLoadOutput("Failed, no modules loaded.")).toMatchObject({ status: "failed", modulesLoaded: 0 });
   });
 
+  it("parses a successful GHC 9.10 reload summary", () => {
+    const s = parseLoadOutput("Ok, 91 modules reloaded.");
+    expect(s).toMatchObject({ status: "ok", modulesLoaded: 91, errors: 0, warnings: 0, diagnostics: [], otherOutput: "" });
+  });
+
+  it("parses a failed GHC 9.10 reload with a diagnostic and CRLF line endings", () => {
+    const s = parseLoadOutput("src/Lib.hs:7:11: error: [GHC-88464]\r\n    Variable not in scope: missing :: Int\r\nFailed, 26 modules reloaded.\r\n");
+    expect(s).toMatchObject({ status: "failed", modulesLoaded: 26, errors: 1, warnings: 0, otherOutput: "" });
+    expect(s.diagnostics).toHaveLength(1);
+    expect(s.diagnostics[0]).toMatchObject({
+      file: "src/Lib.hs",
+      line: 7,
+      column: 11,
+      severity: "error",
+      code: "GHC-88464",
+      message: "Variable not in scope: missing :: Int",
+      raw: "src/Lib.hs:7:11: error: [GHC-88464]\n    Variable not in scope: missing :: Int",
+    });
+  });
+
+  it.each([
+    ["Ok, one module reloaded.", "ok", 1],
+    ["Ok, 1 module reloaded.", "ok", 1],
+    ["Ok, two modules reloaded.", "ok", 2],
+    ["Failed, no modules reloaded.", "failed", 0],
+    ["Failed, no modules to be reloaded.", "failed", 0],
+  ] as const)("parses reload counts in %s", (output, status, modulesLoaded) => {
+    expect(parseLoadOutput(output)).toMatchObject({ status, modulesLoaded, otherOutput: "" });
+  });
+
   it("parses Compiling lines with trailing notes", () => {
     const s = parseLoadOutput("[1 of 3] Compiling Lib              ( src/Lib.hs, interpreted ) [Source file changed]\nOk, three modules loaded.");
     expect(s.compiled).toEqual([{ module: "Lib", file: "src/Lib.hs" }]);
@@ -96,5 +126,30 @@ describe("parseLoadOutput", () => {
   it("does not treat a Windows drive letter as a severity separator", () => {
     const d = parseDiagnostics(`C:\\proj\\src\\Foo.hs:2:3: error:\n    bad`);
     expect(d[0]).toMatchObject({ file: "C:\\proj\\src\\Foo.hs", line: 2, column: 3 });
+  });
+
+  it("keeps unlocated GHC errors without inventing a source position", () => {
+    const output = "<no location info>: error: [GHC-87110]\r\n    Could not load module `Test.Hspec'.\r\n    It is a member of the hidden package `hspec-2.11.17'.\r\n";
+    const s = parseLoadOutput(output);
+    expect(s).toMatchObject({ status: "unknown", errors: 1, warnings: 0, otherOutput: "" });
+    expect(s.diagnostics).toEqual([{
+      severity: "error",
+      code: "GHC-87110",
+      message: "Could not load module `Test.Hspec'.\nIt is a member of the hidden package `hspec-2.11.17'.",
+      raw: output.replace(/\r\n/g, "\n").trimEnd(),
+    }]);
+  });
+
+  it("parses adjacent located and unlocated diagnostics independently", () => {
+    const output = "<no location info>: warning: Warning without a code\n    More detail\nFoo.hs:2:3: error: [GHC-12345] Located error\n<no location info>: error: [GHC-61948]\n    Could not find module `Pml.Language.SpellingSpec'.\nFailed, no modules to be reloaded.";
+    const s = parseLoadOutput(output);
+    expect(s).toMatchObject({ status: "failed", modulesLoaded: 0, errors: 2, warnings: 1, otherOutput: "" });
+    expect(s.diagnostics).toHaveLength(3);
+    expect(s.diagnostics[0]).toMatchObject({ severity: "warning", message: "Warning without a code\nMore detail" });
+    expect(s.diagnostics[1]).toMatchObject({ file: "Foo.hs", line: 2, column: 3, message: "Located error" });
+    expect(s.diagnostics[2]).toMatchObject({ severity: "error", code: "GHC-61948", message: "Could not find module `Pml.Language.SpellingSpec'." });
+    for (const d of [s.diagnostics[0], s.diagnostics[2]]) {
+      for (const key of ["file", "line", "column", "endLine", "endColumn"]) expect(d).not.toHaveProperty(key);
+    }
   });
 });

@@ -179,7 +179,7 @@ export function createMcpServer(cfg: ProjectConfig = loadConfig()): McpServer {
       description:
         "Run :reload in GHCi: recompiles every changed module and reports GHC errors and warnings as structured " +
         "diagnostics. This is the fast replacement for `cabal build` while iterating: use it after every edit. " +
-        "Save files before calling. Reports status ok|failed, module count and each diagnostic with file/line/col.",
+        "Save files before calling. Reports status ok|failed, module count and each diagnostic with file/line/col when GHC supplies a location.",
       inputSchema: { session: sessionArg, timeoutMs: timeoutArg },
     },
     async ({ session = "default", timeoutMs }) =>
@@ -334,10 +334,13 @@ export function createMcpServer(cfg: ProjectConfig = loadConfig()): McpServer {
       description:
         "Run the test suite from inside the session (default command from ghci-mcp.json `testCommand`, else :main). " +
         "Works when the session was started on the test target (e.g. `cabal repl test:spec`) or the test module is loaded. " +
-        "Pass `args` to filter, e.g. hspec: '-m \"MyModule\"', tasty: '-p /name/'. Returns output and a parsed pass/fail summary " +
-        "for hspec and tasty.",
+        "With a colon command such as :main, pass `args` to filter, e.g. hspec: '-m \"MyModule\"', tasty: '-p /name/'. " +
+        "For a Haskell expression, put the filter in the command with System.Environment.withArgs instead; `args` is refused. " +
+        "Returns output and a parsed pass/fail summary " +
+        "for hspec and tasty. Success requires a recognised summary with at least one test and no failures, " +
+        "GHC errors, exceptions or interruption. Unknown output is unverified, not a pass.",
       inputSchema: {
-        args: z.string().optional().describe("Arguments appended to the test command (as with :main)."),
+        args: z.string().optional().describe("Arguments appended to a colon command (such as :main). For Haskell expressions, use System.Environment.withArgs in command instead."),
         command: z.string().optional().describe("Override the GHCi command used to run tests, e.g. 'hspec spec' or ':main'."),
         session: sessionArg,
         timeoutMs: timeoutArg,
@@ -347,14 +350,30 @@ export function createMcpServer(cfg: ProjectConfig = loadConfig()): McpServer {
       withSession(session, async (c) => {
         const { sc } = resolveSession(cfg, session);
         const base = command ?? sc.testCommand ?? ":main";
-        const cmd = args ? `${base} ${args}` : base;
+        const hasArgs = args !== undefined && args.trim() !== "";
+        // Appending --match to an expression starts a Haskell comment and can
+        // silently run the whole suite. Do not interpret CLI text as Haskell.
+        if (hasArgs && !base.trimStart().startsWith(":")) {
+          return text(
+            'args is supported only for GHCi commands beginning with ":". ' +
+            'For a Haskell expression, use a command such as System.Environment.withArgs ["--match", "MyModule"] Main.main with no args. Nothing was run.',
+            undefined,
+            true,
+          );
+        }
+        const cmd = hasArgs ? `${base} ${args}` : base;
         const r = await c.run(cmd, timeoutMs);
         const summary = parseTestOutput(r.output);
+        if (r.interrupted) summary.passed = false;
         const diags = parseDiagnostics(r.output);
         const head =
-          summary.framework === "unknown"
-            ? `Ran: ${cmd} (${r.durationMs}ms)${r.interrupted ? " [interrupted]" : ""}`
-            : `${summary.passed ? "PASSED" : "FAILED"} (${summary.framework}): ${summary.summaryLine} (${r.durationMs}ms)`;
+          r.interrupted
+            ? `INTERRUPTED: test completion not verified (${r.durationMs}ms)`
+            : summary.framework === "unknown"
+              ? `UNVERIFIED: no hspec or tasty summary (${r.durationMs}ms)\nRan: ${cmd}`
+              : summary.total === 0
+                ? `UNVERIFIED: no tests reported (${r.durationMs}ms)`
+                : `${summary.passed ? "PASSED" : "FAILED"} (${summary.framework}): ${summary.summaryLine} (${r.durationMs}ms)`;
         return text(
           `${head}\n\n${r.output}`,
           { ...summary, command: cmd, durationMs: r.durationMs, interrupted: r.interrupted, diagnostics: diags, output: r.output },
@@ -407,7 +426,9 @@ export function formatLoad(summary: LoadSummary, raw: string, durationMs: number
 }
 
 function formatDiag(d: Diagnostic): string {
-  const loc = `${d.file}:${d.line}:${d.column}` + (d.endLine != null && d.endLine !== d.line ? `-${d.endLine}:${d.endColumn}` : d.endColumn != null ? `-${d.endColumn}` : "");
+  const loc = d.file === undefined
+    ? "<no location info>"
+    : `${d.file}:${d.line}:${d.column}` + (d.endLine != null && d.endLine !== d.line ? `-${d.endLine}:${d.endColumn}` : d.endColumn != null ? `-${d.endColumn}` : "");
   const code = d.code ? ` [${d.code}]` : "";
   return `${d.severity.toUpperCase()} ${loc}${code}\n${indent(d.message, 4)}\n`;
 }
@@ -428,25 +449,37 @@ export interface TestSummary {
 
 export function parseTestOutput(output: string): TestSummary {
   const s = parseFrameworkOutput(output);
-  // A GHC error (e.g. "Variable not in scope") means the tests didn't run cleanly, whatever the framework said.
-  if (parseDiagnostics(output).some((d) => d.severity === "error")) s.passed = false;
+  // The command may fail after printing a passing summary. GHCi refusals and
+  // runtime exceptions do not always carry a compiler diagnostic location.
+  if (
+    parseDiagnostics(output).some((d) => d.severity === "error") ||
+    /\*\*\* Exception\b|^(?:Command is not supported\b|unknown command\b|syntax:)/m.test(output)
+  ) s.passed = false;
   return s;
 }
 
 function parseFrameworkOutput(output: string): TestSummary {
-  // hspec: "12 examples, 0 failures" / "12 examples, 2 failures, 1 pending"
-  const hspec = /(\d+) examples?, (\d+) failures?(?:, (\d+) pending)?/.exec(output);
-  if (hspec) {
-    const total = Number(hspec[1]);
-    const failures = Number(hspec[2]);
-    return { framework: "hspec", passed: failures === 0, total, failures, summaryLine: hspec[0] };
+  let result: TestSummary = { framework: "unknown", passed: false, total: null, failures: null, summaryLine: "" };
+  for (const line of output.split(/\r?\n/)) {
+    const summaryLine = line.trim();
+    // Match whole summary lines, not quoted expected output. If the command
+    // runs several suites, a later passing summary must not hide a failure.
+    const hspec = /^(\d+) examples?, (\d+) failures?(?:, \d+ pending)?$/.exec(summaryLine);
+    const tastyOk = /^All (\d+) tests? passed(?: \([^)]*\))?$/.exec(summaryLine);
+    const tastyFail = /^(\d+) out of (\d+) tests? failed(?: \([^)]*\))?$/.exec(summaryLine);
+    if (hspec) {
+      const total = Number(hspec[1]);
+      const failures = Number(hspec[2]);
+      result = { framework: "hspec", passed: total > 0 && failures === 0, total, failures, summaryLine };
+    } else if (tastyOk) {
+      const total = Number(tastyOk[1]);
+      result = { framework: "tasty", passed: total > 0, total, failures: 0, summaryLine };
+    } else if (tastyFail) {
+      result = { framework: "tasty", passed: false, total: Number(tastyFail[2]), failures: Number(tastyFail[1]), summaryLine };
+    } else {
+      continue;
+    }
+    if (!result.passed) return result;
   }
-  // tasty: "All 12 tests passed (0.01s)" / "3 out of 12 tests failed (0.02s)"
-  const tastyOk = /All (\d+) tests? passed/.exec(output);
-  if (tastyOk) return { framework: "tasty", passed: true, total: Number(tastyOk[1]), failures: 0, summaryLine: tastyOk[0] };
-  const tastyFail = /(\d+) out of (\d+) tests? failed/.exec(output);
-  if (tastyFail) {
-    return { framework: "tasty", passed: false, total: Number(tastyFail[2]), failures: Number(tastyFail[1]), summaryLine: tastyFail[0] };
-  }
-  return { framework: "unknown", passed: !/\*\*\* Exception|error:|Not in scope/.test(output), total: null, failures: null, summaryLine: "" };
+  return result;
 }

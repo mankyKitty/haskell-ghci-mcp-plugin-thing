@@ -7,6 +7,7 @@
  *   Foo.hs:12:5-10: warning: [-Wunused-imports] ...
  *   Foo.hs:(12,5)-(14,20): error: [GHC-83865] ...
  *   <interactive>:3:1: error: ...
+ *   <no location info>: error: [GHC-87110] ...
  *
  * and the module summary lines:
  *   [1 of 3] Compiling Foo ( src/Foo.hs, interpreted )
@@ -14,14 +15,18 @@
  *   Ok, one module loaded.
  *   Failed, 2 modules loaded.
  *   Ok, no modules loaded.
+ *   Ok, 91 modules reloaded.
+ *   Failed, 26 modules reloaded.
+ *   Failed, no modules to be reloaded.
  */
 
 export type Severity = "error" | "warning";
 
 export interface Diagnostic {
-  file: string;
-  line: number;
-  column: number;
+  /** Source position fields are absent together when GHC reports no location. */
+  file?: string;
+  line?: number;
+  column?: number;
   endLine?: number;
   endColumn?: number;
   severity: Severity;
@@ -49,10 +54,11 @@ export interface LoadSummary {
 
 const HEADER_RE =
   /^(?<file>(?:[A-Za-z]:)?[^\s:][^:\n]*?):(?:(?<l>\d+):(?<c>\d+)(?:-(?<c2>\d+))?|\((?<l1>\d+),(?<c1>\d+)\)-\((?<l2>\d+),(?<cc2>\d+)\)):\s*(?<sev>[Ee]rror|[Ww]arning)(?::\s*(?<rest>.*))?$/;
+const UNLOCATED_HEADER_RE = /^<no location info>:\s*(?<sev>[Ee]rror|[Ww]arning)(?::\s*(?<rest>.*))?$/;
 
 const COMPILING_RE = /^\[\s*\d+ of \d+\] Compiling (?<mod>\S+)\s+\(\s*(?<file>[^,]+?)\s*,[^)]*\).*$/;
-// GHC spells out small counts: "Ok, two modules loaded."
-const SUMMARY_RE = /^(?<status>Ok|Failed), (?<count>no|one|two|three|four|five|six|seven|eight|nine|ten|\d+) modules? loaded\.?$/;
+// GHC spells out small counts; 9.10 also uses "reloaded" and "to be reloaded".
+const SUMMARY_RE = /^(?<status>Ok|Failed), (?<count>no|one|two|three|four|five|six|seven|eight|nine|ten|\d+) modules? (?:to be )?(?:re)?loaded\.?$/;
 const WORD_NUMBERS: Record<string, number> = { no: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
 
 export function parseDiagnostics(output: string): Diagnostic[] {
@@ -87,7 +93,7 @@ export function parseLoadOutput(output: string): LoadSummary {
       continue;
     }
 
-    const head = HEADER_RE.exec(line);
+    const head = HEADER_RE.exec(line) ?? UNLOCATED_HEADER_RE.exec(line);
     if (head?.groups) {
       const g = head.groups;
       const rawLines = [line];
@@ -128,13 +134,15 @@ export function parseLoadOutput(output: string): LoadSummary {
       const message = cleanBody(bodyLines);
       const severity: Severity = g.sev!.toLowerCase() === "error" ? "error" : "warning";
       const d: Diagnostic = {
-        file: g.file!,
-        line: Number(g.l ?? g.l1),
-        column: Number(g.c ?? g.c1),
         severity,
         message,
         raw: rawLines.join("\n"),
       };
+      if (g.file !== undefined) {
+        d.file = g.file;
+        d.line = Number(g.l ?? g.l1);
+        d.column = Number(g.c ?? g.c1);
+      }
       if (code) d.code = code;
       if (g.c2) {
         d.endLine = d.line;

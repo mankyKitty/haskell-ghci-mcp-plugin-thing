@@ -94,16 +94,19 @@ describe("MCP server (end to end)", () => {
 
   it.runIf(haveGhci)("ghci_reload reports structured errors after a bad edit, then recovers", async () => {
     writeFileSync(join(dir, "src", "Lib.hs"), 'module Lib where\n\nanswer :: Int\nanswer = "oops"\n');
-    const bad = await call("ghci_reload");
-    expect(bad.isError).toBe(false); // a failed typecheck is a successful tool call
-    expect(bad.structured).toMatchObject({ status: "failed", errors: 1 });
-    const diags = bad.structured!.diagnostics as { file: string; line: number; column: number; severity: string }[];
-    expect(diags[0]).toMatchObject({ file: "src/Lib.hs", line: 4, column: 10, severity: "error" });
-    expect(bad.text).toContain("ERROR src/Lib.hs:4:10");
-
-    writeFileSync(join(dir, "src", "Lib.hs"), "module Lib where\n\nanswer :: Int\nanswer = 42\n");
-    const ok = await call("ghci_reload");
-    expect(ok.structured).toMatchObject({ status: "ok", errors: 0 });
+    try {
+      const bad = await call("ghci_reload");
+      expect(bad.isError).toBe(false); // a failed typecheck is a successful tool call
+      expect(bad.structured, String(bad.structured?.raw)).toMatchObject({ status: "failed", errors: 1 });
+      const diags = bad.structured!.diagnostics as { file: string; line: number; column: number; severity: string }[];
+      expect(diags[0]).toMatchObject({ file: "src/Lib.hs", line: 4, column: 10, severity: "error" });
+      expect(bad.text).toContain("ERROR src/Lib.hs:4:10");
+    } finally {
+      // Keep a parser failure from leaving every later tool test a broken module.
+      writeFileSync(join(dir, "src", "Lib.hs"), "module Lib where\n\nanswer :: Int\nanswer = 42\n");
+      const ok = await call("ghci_reload");
+      expect(ok.structured).toMatchObject({ status: "ok", errors: 0 });
+    }
   });
 
   it.runIf(haveGhci)("ghci_type / ghci_info / ghci_eval", async () => {
